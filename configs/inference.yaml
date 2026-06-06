@@ -7,7 +7,7 @@ use_latest_checkpoints: true
 # inference params
 dataset: PONG
 preload_ratio:
-device: mps # make sure to use correct device
+device: cuda # make sure to use correct device
 generation_steps: 10
 context_window: 2
 fps: 2

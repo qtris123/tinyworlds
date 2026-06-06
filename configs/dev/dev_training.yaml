@@ -29,6 +29,14 @@ learning_rate: 0.0001
 batch_size_per_gpu: 8
 gradient_accumulation_steps: 1
 
+# distributed launch (torchrun)
+distributed:
+  use_ddp: False
+  use_fsdp: False
+  reshard_after_forward: False
+nproc_per_node: 1
+standalone: true
+
 # Stage configs
 video_tokenizer_config: configs/video_tokenizer.yaml
 latent_actions_config: configs/latent_actions.yaml

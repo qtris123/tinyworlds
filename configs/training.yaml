@@ -4,7 +4,7 @@ wandb_project: tinyworlds
 
 # dataset
 dataset: PICODOOM
-preload_ratio: 0.005
+preload_ratio: 0.3 # 0.005
 
 # shared model params
 patch_size: 4
