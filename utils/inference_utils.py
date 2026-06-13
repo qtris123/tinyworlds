@@ -51,13 +51,20 @@ def visualize_inference(predicted_frames, ground_truth_frames, inferred_actions,
         axes[0, i].axis('off')
 
     # Plot predicted frames (bottom row)
+    num_context = T - len(inferred_actions) if len(inferred_actions) > 0 else 0
     for i in range(T):
         frame = predicted_frames[0, i].permute(1, 2, 0).numpy()  # [H, W, C]
         axes[1, i].imshow(frame)
-        title = f'Predicted {i+1}'
-        if use_actions and i < len(inferred_actions):
-            title += f'\nAction {inferred_actions[i].item()}' if i < len(inferred_actions) else ''
-        axes[1, i].set_title(title, fontsize=12, color='red')
+        if i < num_context:
+            title = f'Context {i+1}'
+            color = 'blue'
+        else:
+            gen_idx = i - num_context
+            title = f'Generated {gen_idx+1}'
+            if use_actions and gen_idx < len(inferred_actions):
+                title += f'\nAction {inferred_actions[gen_idx].item()}'
+            color = 'red'
+        axes[1, i].set_title(title, fontsize=12, color=color)
         axes[1, i].axis('off')
     
     plt.suptitle('Ground Truth vs Predicted Frames', fontsize=16, fontweight='bold')
