@@ -257,7 +257,12 @@ def main():
                 )
             if is_main:
                 save_path = os.path.join(visualizations_dir, f'dynamics_prediction_step_{i}.png')
-                visualize_reconstruction(masked_frames[:16].cpu(), predicted_frames[:16].cpu(), save_path)
+                vis_actions = None
+                if args.use_actions and quantized_actions is not None:
+                    vis_actions = latent_action_model.quantizer.get_indices_from_latents(
+                        quantized_actions[:16].detach()
+                    ).cpu()
+                visualize_reconstruction(masked_frames[:16].cpu(), predicted_frames[:16].cpu(), save_path, actions=vis_actions)
 
             print('\n Step', i, 'Loss:', torch.mean(torch.stack(results["loss_vals"][-args.log_interval:])).item())
 

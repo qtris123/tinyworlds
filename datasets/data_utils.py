@@ -6,6 +6,7 @@ from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
 import time
 import os
+from typing import Optional, Tuple
 import numpy as np
 import matplotlib.pyplot as plt
 from torchvision.utils import make_grid
@@ -24,87 +25,119 @@ def _default_video_transform():
     ])
 
 
-def _load_video_dataset_pair(dataset_cls, video_rel_path, h5_rel_path, num_frames, transform=None, fps=30, preload_ratio=1, **kwargs):
+def _load_video_dataset_pair(
+    dataset_cls,
+    video_rel_path,
+    h5_rel_path,
+    num_frames,
+    transform=None,
+    fps=30,
+    preload_ratio=1,
+    disable_test_split: bool = True,
+    resize_to: Optional[Tuple[int, int]] = None,
+    **kwargs,
+):
     current_folder_path = os.getcwd()
     video_path = current_folder_path + video_rel_path
     preprocessed_path = current_folder_path + h5_rel_path
     transform = _default_video_transform() if transform is None else transform
+
+    # Only override the dataset class's `resolution` default if the caller explicitly
+    # asked to. This keeps existing training/inference call sites on their dataset
+    # defaults (e.g. SONIC=128x128) while letting evaluate.py force a uniform 64x64.
+    extra: dict = {}
+    if resize_to is not None:
+        extra['resolution'] = tuple(resize_to)
 
     train = dataset_cls(
         video_path,
         transform=transform,
         save_path=preprocessed_path,
         train=True,
+        disable_test_split=disable_test_split,
         num_frames=num_frames,
         fps=fps,
         preload_ratio=preload_ratio,
-        **kwargs
+        **extra,
+        **kwargs,
     )
     val = dataset_cls(
         video_path,
         transform=transform,
         save_path=preprocessed_path,
         train=False,
+        disable_test_split=disable_test_split,
         num_frames=num_frames,
         fps=fps,
         preload_ratio=preload_ratio,
-        **kwargs
+        **extra,
+        **kwargs,
     )
     return train, val
 
 
-def load_pong(num_frames=1, fps=15, preload_ratio=1):
+def load_pong(num_frames=1, fps=15, preload_ratio=1, disable_test_split: bool = True, resize_to: Optional[Tuple[int, int]] = None):
     return _load_video_dataset_pair(
         PongDataset,
         '/data/pong.mp4',
         '/data/pong_frames.h5',
         num_frames=num_frames,
         fps=fps,
-        preload_ratio=preload_ratio
+        preload_ratio=preload_ratio,
+        disable_test_split=disable_test_split,
+        resize_to=resize_to,
     )
 
 
-def load_sonic(num_frames=4, fps=15, preload_ratio=1):
+def load_sonic(num_frames=4, fps=15, preload_ratio=1, disable_test_split: bool = True, resize_to: Optional[Tuple[int, int]] = None):
     return _load_video_dataset_pair(
         SonicDataset,
         '/data/sonic_frames.mp4',
         '/data/sonic_frames.h5',
         num_frames=num_frames,
         fps=fps,
-        preload_ratio=preload_ratio
+        preload_ratio=preload_ratio,
+        disable_test_split=disable_test_split,
+        resize_to=resize_to,
     )
 
 
-def load_pole_position(num_frames=4, fps=15, preload_ratio=1):
+def load_pole_position(num_frames=4, fps=15, preload_ratio=1, disable_test_split: bool = True, resize_to: Optional[Tuple[int, int]] = None):
     return _load_video_dataset_pair(
         PolePositionDataset,
         '/data/pole_position.mp4',
         '/data/pole_position_frames.h5',
         num_frames=num_frames,
         fps=fps,
-        preload_ratio=preload_ratio
+        preload_ratio=preload_ratio,
+        disable_test_split=disable_test_split,
+        resize_to=resize_to,
     )
 
 
-def load_picodoom(num_frames=4, fps=30, preload_ratio=1):
+def load_picodoom(num_frames=4, fps=30, preload_ratio=1, disable_test_split: bool = True, resize_to: Optional[Tuple[int, int]] = None):
     return _load_video_dataset_pair(
         PicoDoomDataset,
         '/data/picodoom cleaned.mp4',
         '/data/picodoom_frames.h5',
         num_frames=num_frames,
         fps=30,
-        preload_ratio=preload_ratio
+        preload_ratio=preload_ratio,
+        disable_test_split=disable_test_split,
+        resize_to=resize_to,
     )
 
 
-def load_zelda(num_frames=4, fps=15, preload_ratio=1):
+def load_zelda(num_frames=4, fps=15, preload_ratio=1, disable_test_split: bool = True, resize_to: Optional[Tuple[int, int]] = None):
     return _load_video_dataset_pair(
         ZeldaDataset,
         '/data/Zelda oot2d 1 Cut.mp4',
         '/data/zelda_frames.h5',
         num_frames=num_frames,
         fps=fps,
-        preload_ratio=preload_ratio
+        preload_ratio=preload_ratio,
+        disable_test_split=disable_test_split,
+        resize_to=resize_to,
     )
 
 
@@ -141,17 +174,35 @@ def data_loaders(train_data, val_data, batch_size, distributed=False, rank=0, wo
     return train_loader, val_loader
 
 
-def load_data_and_data_loaders(dataset, batch_size, num_frames=1, distributed=False, rank=0, world_size=1, fps=15, preload_ratio=1):
+def load_data_and_data_loaders(
+    dataset,
+    batch_size,
+    num_frames=1,
+    distributed=False,
+    rank=0,
+    world_size=1,
+    fps=15,
+    preload_ratio=1,
+    disable_test_split: bool = True,
+    resize_to: Optional[Tuple[int, int]] = None,
+):
+    common = dict(
+        num_frames=num_frames,
+        fps=fps,
+        preload_ratio=preload_ratio,
+        disable_test_split=disable_test_split,
+        resize_to=resize_to,
+    )
     if dataset == 'PONG':
-        training_data, validation_data = load_pong(num_frames=num_frames, fps=fps, preload_ratio=preload_ratio)
+        training_data, validation_data = load_pong(**common)
     elif dataset == 'SONIC':
-        training_data, validation_data = load_sonic(num_frames=num_frames, fps=fps, preload_ratio=preload_ratio)
+        training_data, validation_data = load_sonic(**common)
     elif dataset == 'POLE_POSITION':
-        training_data, validation_data = load_pole_position(num_frames=num_frames, fps=fps, preload_ratio=preload_ratio)
+        training_data, validation_data = load_pole_position(**common)
     elif dataset == 'PICODOOM':
-        training_data, validation_data = load_picodoom(num_frames=num_frames, fps=fps, preload_ratio=preload_ratio)
+        training_data, validation_data = load_picodoom(**common)
     elif dataset == 'ZELDA':
-        training_data, validation_data = load_zelda(num_frames=num_frames, fps=fps, preload_ratio=preload_ratio)
+        training_data, validation_data = load_zelda(**common)
     else:
         raise ValueError('Invalid dataset')
 
@@ -169,9 +220,10 @@ def readable_timestamp():
         ' ', '_').replace(':', '_').lower()
 
 
-def visualize_reconstruction(original, reconstruction, save_path=None):
+def visualize_reconstruction(original, reconstruction, save_path=None, actions=None):
     # original: (B, C, H, W) or (B, T, C, H, W)
-    # reconstruction: (B, C, H, W) or (B, T, C, H, W) 
+    # reconstruction: (B, C, H, W) or (B, T, C, H, W)
+    # actions: optional (B, T-1) integer action indices, used to annotate transitions
 
     # move tensors to CPU and convert to float32 for matplotlib compatibility
     original = original.detach().to('cpu', dtype=torch.float32)
@@ -190,23 +242,71 @@ def visualize_reconstruction(original, reconstruction, save_path=None):
     original = original[:num_sequences, :seq_length]  # (B, T, C, H, W)
     reconstruction = reconstruction[:num_sequences, :seq_length]  # (B, T, C, H, W)
 
-    # create a figure with two subplots side by side
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+    show_actions = actions is not None
+    if show_actions:
+        fig = plt.figure(figsize=(16, 11))
+        gs = fig.add_gridspec(2, 2, height_ratios=[4, 1], hspace=0.35, wspace=0.15)
+        ax1 = fig.add_subplot(gs[0, 0])
+        ax2 = fig.add_subplot(gs[0, 1])
+        ax3 = fig.add_subplot(gs[1, :])
+    else:
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
 
-    # for original sequences
-    # reshape to (B * T, C, H, W) for make_grid
+    # original sequences
     orig_flat = original.reshape(-1, *original.shape[2:])  # (B*T, C, H, W)
     grid_orig = make_grid(orig_flat, nrow=seq_length, normalize=True, padding=2).clamp(0, 1)
     ax1.imshow(grid_orig.permute(1, 2, 0).contiguous().numpy())
     ax1.axis('off')
-    ax1.set_title(f'Original Sequences (4 sequences × {seq_length} frames)')
+    ax1.set_title(f'Original Sequences ({num_sequences} sequences × {seq_length} frames)')
 
-    # for reconstructed sequences
+    # reconstructed sequences
     recon_flat = reconstruction.reshape(-1, *reconstruction.shape[2:])  # (B*T, C, H, W)
     grid_recon = make_grid(recon_flat, nrow=seq_length, normalize=True, padding=2).clamp(0, 1)
     ax2.imshow(grid_recon.permute(1, 2, 0).contiguous().numpy())
     ax2.axis('off')
-    ax2.set_title(f'Reconstructed Sequences (4 sequences × {seq_length} frames)')
+    recon_title = f'Reconstructed Sequences ({num_sequences} sequences × {seq_length} frames)'
+    if show_actions:
+        recon_title += '\nframe[t+1] = dynamics(latent_code[t], action[t→t+1])'
+    ax2.set_title(recon_title)
+
+    if show_actions:
+        # actions: (B, T-1) integer indices
+        actions = actions.detach().cpu().long()
+        n_transitions = min(seq_length - 1, actions.shape[1])
+        action_grid = actions[:num_sequences, :n_transitions]  # (num_seq, n_transitions)
+
+        # determine colour scale from the config-level n_actions if possible; fall back to data max
+        n_actions_total = max(action_grid.max().item() + 1, 8)
+
+        im = ax3.imshow(
+            action_grid.float().numpy(),
+            aspect='auto',
+            cmap='tab10',
+            vmin=0,
+            vmax=n_actions_total - 1,
+            interpolation='nearest',
+        )
+
+        for row in range(num_sequences):
+            for col in range(n_transitions):
+                idx_val = action_grid[row, col].item()
+                ax3.text(
+                    col, row, f'a={idx_val}',
+                    ha='center', va='center',
+                    fontsize=10, fontweight='bold',
+                    color='white',
+                )
+
+        ax3.set_xticks(range(n_transitions))
+        ax3.set_xticklabels([f't{t}→t{t+1}' for t in range(n_transitions)], fontsize=10)
+        ax3.set_yticks(range(num_sequences))
+        ax3.set_yticklabels([f'seq {s}' for s in range(num_sequences)], fontsize=10)
+        ax3.set_title(
+            'Action Codes Used for Reconstruction  '
+            '(each predicted frame[t+1] requires latent_video_code[t] + action_code[t→t+1])',
+            fontsize=10,
+        )
+        plt.colorbar(im, ax=ax3, label='Action index', fraction=0.02, pad=0.02)
 
     plt.tight_layout()
 
