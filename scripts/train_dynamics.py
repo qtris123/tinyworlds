@@ -220,28 +220,26 @@ def main():
 
         # save model and visualize results
         if i % args.log_interval == 0:
-            if args.use_wandb:
-                predicted_next_indices = torch.argmax(predicted_next_logits, dim=-1)
-                predicted_next_latents = video_tokenizer.quantizer.get_latents_from_indices(predicted_next_indices, dim=-1)
-                with torch.no_grad():
-                    predicted_frames = video_tokenizer.decoder(predicted_next_latents[:16]) # [B, T, C, H, W]
+            # decode predictions and build masked-frame overlay for visualization (always, not just wandb)
+            predicted_next_indices = torch.argmax(predicted_next_logits, dim=-1)
+            predicted_next_latents = video_tokenizer.quantizer.get_latents_from_indices(predicted_next_indices, dim=-1)
+            with torch.no_grad():
+                predicted_frames = video_tokenizer.decoder(predicted_next_latents[:16])  # [B, T, C, H, W]
 
-                # convert mask_positions to patch-level mask for visualization
-                B, T, P = mask_positions.shape
-                patch_size = args.patch_size
-                H, W = args.frame_size, args.frame_size
-                pixel_mask = torch.zeros(B, T, H, W, device=mask_positions.device)
-                # for each pixel patch, mask if equivalent token is masked
-                for b in range(B):
-                    for t in range(T):
-                        for p in range(P):
-                            if mask_positions[b, t, p]:
-                                patch_row = (p // (W // patch_size)) * patch_size
-                                patch_col = (p % (W // patch_size)) * patch_size
-                                pixel_mask[b, t, patch_row:patch_row+patch_size, patch_col:patch_col+patch_size] = 1 # assigning 1 to the patch in the mask of dim [1, 1, Hp, Wp]
-                pixel_mask_expanded = rearrange(pixel_mask, 'b t h w -> b t 1 h w')
-                masked_frames = x * (1 - pixel_mask_expanded)
-            
+            B, T, P = mask_positions.shape
+            patch_size = args.patch_size
+            H, W = args.frame_size, args.frame_size
+            pixel_mask = torch.zeros(B, T, H, W, device=mask_positions.device)
+            for b in range(B):
+                for t in range(T):
+                    for p in range(P):
+                        if mask_positions[b, t, p]:
+                            patch_row = (p // (W // patch_size)) * patch_size
+                            patch_col = (p % (W // patch_size)) * patch_size
+                            pixel_mask[b, t, patch_row:patch_row+patch_size, patch_col:patch_col+patch_size] = 1
+            pixel_mask_expanded = rearrange(pixel_mask, 'b t h w -> b t 1 h w')
+            masked_frames = x * (1 - pixel_mask_expanded)
+
             hyperparameters = args.__dict__
             ckpt_path = save_training_state(dynamics_model, optimizers[0], schedulers[0], hyperparameters, checkpoints_dir, prefix='dynamics', step=i)
             # save secondary optimizer/scheduler state when using split optimizers (Muon+AdamW)
