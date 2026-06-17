@@ -66,6 +66,16 @@ def log_system_metrics(step: int):
         }, step=step)
 
 
+def log_data_partition(partition_info: Dict[str, Any]) -> None:
+    """Log dataset partition metadata to the active wandb run's config.
+    Shows up in the wandb Config panel (not as a metric) since it is
+    static metadata that describes the dataset, not a time-series value.
+    """
+    if wandb.run is None:
+        return
+    wandb.config.update({"data": partition_info}, allow_val_change=True)
+
+
 def finish_wandb():
     """Finish the W&B run"""
     if wandb.run is not None:

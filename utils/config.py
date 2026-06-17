@@ -117,6 +117,11 @@ class VideoTokenizerConfig:
 	# other params
 	fps: Optional[int] = None
 	preload_ratio: Optional[float] = None
+	# Eval loss — opt-in; requires no changes to the original training path
+	enable_eval_loss: bool = False
+	eval_loss_interval: int = 0   # 0 = use log_interval
+	train_ratio: float = 0.8      # chronological fraction of raw frames for training
+	eval_ratio: float = 0.1       # next fraction for eval (remainder → test, never loaded)
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)
@@ -163,6 +168,11 @@ class LatentActionsConfig:
 	# other params
 	fps: Optional[int] = None
 	preload_ratio: Optional[float] = None
+	# Eval loss — opt-in; requires no changes to the original training path
+	enable_eval_loss: bool = False
+	eval_loss_interval: int = 0   # 0 = use log_interval
+	train_ratio: float = 0.8
+	eval_ratio: float = 0.1
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)
@@ -221,6 +231,11 @@ class DynamicsConfig:
 	# other params
 	fps: Optional[int] = None
 	preload_ratio: Optional[float] = None
+	# Eval loss — opt-in; requires no changes to the original training path
+	enable_eval_loss: bool = False
+	eval_loss_interval: int = 0   # 0 = use log_interval
+	train_ratio: float = 0.8
+	eval_ratio: float = 0.1
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)
@@ -281,6 +296,11 @@ class TrainingConfig:
 	optimizer: str = "adamw"
 	muon_momentum: float = 0.95
 	muon_backend_steps: int = 5
+	# Eval loss — opt-in feature propagated to all stage configs
+	enable_eval_loss: bool = False
+	eval_loss_interval: int = 0
+	train_ratio: float = 0.8
+	eval_ratio: float = 0.1
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)

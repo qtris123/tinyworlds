@@ -26,6 +26,14 @@ class VideoHDF5Dataset(Dataset):
         preload_ratio: Optional[float] = None, # if set, only load this ratio of cached frames
         preprocess_read_step: int = 1, # step to subsample raw video during preprocessing
         preprocess_slice: Optional[Tuple[Union[int, float], Union[int, float]]] = None, # optional slice applied to preprocessed frames; can be (start_idx, end_idx) ints or (start_ratio, end_ratio) floats in [0,1]
+        # Three-way chronological partition (train / eval / test).
+        # Only active when enable_partition=True; takes precedence over disable_test_split.
+        # Partition boundaries are applied after all other preprocessing (preload_ratio, etc.)
+        # so the raw-frame indices are deterministic and consistent across dataset instances.
+        enable_partition: bool = False,
+        partition: str = 'train',  # 'train' | 'eval' | 'test'
+        train_ratio: float = 0.8,
+        eval_ratio: float = 0.1,
     ) -> None:
         self.transform = transform
         self.train = train
@@ -70,7 +78,23 @@ class VideoHDF5Dataset(Dataset):
 
             self.data = frames
 
-        if not disable_test_split:
+        # Store the total number of raw frames before any partition slicing so
+        # callers can report the full dataset size in settings files.
+        self.total_raw_frames = len(self.data)
+
+        if enable_partition:
+            # Three-way chronological split: first train_ratio → train,
+            # next eval_ratio → eval, remainder → test.
+            n = len(self.data)
+            split1 = int(n * train_ratio)
+            split2 = min(int(n * (train_ratio + eval_ratio)), n)
+            if partition == 'train':
+                self.data = self.data[:split1]
+            elif partition == 'eval':
+                self.data = self.data[split1:split2]
+            else:  # 'test'
+                self.data = self.data[split2:]
+        elif not disable_test_split:
             split_idx = int(0.9 * len(self.data))
             self.data = self.data[:split_idx] if train else self.data[split_idx:]
 
@@ -146,7 +170,7 @@ class VideoHDF5Dataset(Dataset):
 
 # TODO: add more datasets
 class PongDataset(VideoHDF5Dataset):
-    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=1, resolution=(64, 64), fps=30, preload_ratio=1, disable_test_split=True):
+    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=1, resolution=(64, 64), fps=30, preload_ratio=1, disable_test_split=True, **kwargs):
         super().__init__(
             video_path=video_path,
             transform=transform,
@@ -161,10 +185,11 @@ class PongDataset(VideoHDF5Dataset):
             load_start_index=0,
             preprocess_read_step=10,  # keep every 10th frame from raw
             preprocess_slice=None,
+            **kwargs,
         )
 
 class PolePositionDataset(VideoHDF5Dataset):
-    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(64, 64), fps=30, preload_ratio=1, disable_test_split=True):
+    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(64, 64), fps=30, preload_ratio=1, disable_test_split=True, **kwargs):
         super().__init__(
             video_path=video_path,
             transform=transform,
@@ -180,10 +205,11 @@ class PolePositionDataset(VideoHDF5Dataset):
             load_start_index=0,
             preprocess_read_step=1,
             preprocess_slice=(1/50, 1/4),
+            **kwargs,
         )
 
 class SonicDataset(VideoHDF5Dataset):
-    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(128, 128), fps=15, preload_ratio=1, disable_test_split=True):
+    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(128, 128), fps=15, preload_ratio=1, disable_test_split=True, **kwargs):
         super().__init__(
             video_path=video_path,
             transform=transform,
@@ -199,10 +225,11 @@ class SonicDataset(VideoHDF5Dataset):
             load_start_index=100,
             preprocess_read_step=1,
             preprocess_slice=None,
+            **kwargs,
         )
 
 class PicoDoomDataset(VideoHDF5Dataset):
-    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(128, 128), fps=30, preload_ratio=0.3, disable_test_split=True):
+    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(128, 128), fps=30, preload_ratio=0.3, disable_test_split=True, **kwargs):
         super().__init__(
             video_path=video_path,
             transform=transform,
@@ -218,10 +245,11 @@ class PicoDoomDataset(VideoHDF5Dataset):
             load_start_index=300,
             preprocess_read_step=1,
             preprocess_slice=None,
+            **kwargs,
         )
 
 class ZeldaDataset(VideoHDF5Dataset):
-    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(64, 64), fps=15, preload_ratio=0.2, disable_test_split=True):
+    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(64, 64), fps=15, preload_ratio=0.2, disable_test_split=True, **kwargs):
         super().__init__(
             video_path=video_path,
             transform=transform,
@@ -237,4 +265,5 @@ class ZeldaDataset(VideoHDF5Dataset):
             load_start_index=1000,
             preprocess_read_step=1,
             preprocess_slice=None,
+            **kwargs,
         )

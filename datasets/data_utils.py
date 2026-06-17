@@ -76,7 +76,7 @@ def _load_video_dataset_pair(
     return train, val
 
 
-def load_pong(num_frames=1, fps=15, preload_ratio=1, disable_test_split: bool = True, resize_to: Optional[Tuple[int, int]] = None):
+def load_pong(num_frames=1, fps=15, preload_ratio=1, disable_test_split: bool = True, resize_to: Optional[Tuple[int, int]] = None, **kwargs):
     return _load_video_dataset_pair(
         PongDataset,
         '/data/pong.mp4',
@@ -86,10 +86,11 @@ def load_pong(num_frames=1, fps=15, preload_ratio=1, disable_test_split: bool = 
         preload_ratio=preload_ratio,
         disable_test_split=disable_test_split,
         resize_to=resize_to,
+        **kwargs,
     )
 
 
-def load_sonic(num_frames=4, fps=15, preload_ratio=1, disable_test_split: bool = True, resize_to: Optional[Tuple[int, int]] = None):
+def load_sonic(num_frames=4, fps=15, preload_ratio=1, disable_test_split: bool = True, resize_to: Optional[Tuple[int, int]] = None, **kwargs):
     return _load_video_dataset_pair(
         SonicDataset,
         '/data/sonic_frames.mp4',
@@ -99,10 +100,11 @@ def load_sonic(num_frames=4, fps=15, preload_ratio=1, disable_test_split: bool =
         preload_ratio=preload_ratio,
         disable_test_split=disable_test_split,
         resize_to=resize_to,
+        **kwargs,
     )
 
 
-def load_pole_position(num_frames=4, fps=15, preload_ratio=1, disable_test_split: bool = True, resize_to: Optional[Tuple[int, int]] = None):
+def load_pole_position(num_frames=4, fps=15, preload_ratio=1, disable_test_split: bool = True, resize_to: Optional[Tuple[int, int]] = None, **kwargs):
     return _load_video_dataset_pair(
         PolePositionDataset,
         '/data/pole_position.mp4',
@@ -112,10 +114,11 @@ def load_pole_position(num_frames=4, fps=15, preload_ratio=1, disable_test_split
         preload_ratio=preload_ratio,
         disable_test_split=disable_test_split,
         resize_to=resize_to,
+        **kwargs,
     )
 
 
-def load_picodoom(num_frames=4, fps=30, preload_ratio=1, disable_test_split: bool = True, resize_to: Optional[Tuple[int, int]] = None):
+def load_picodoom(num_frames=4, fps=30, preload_ratio=1, disable_test_split: bool = True, resize_to: Optional[Tuple[int, int]] = None, **kwargs):
     return _load_video_dataset_pair(
         PicoDoomDataset,
         '/data/picodoom cleaned.mp4',
@@ -125,10 +128,11 @@ def load_picodoom(num_frames=4, fps=30, preload_ratio=1, disable_test_split: boo
         preload_ratio=preload_ratio,
         disable_test_split=disable_test_split,
         resize_to=resize_to,
+        **kwargs,
     )
 
 
-def load_zelda(num_frames=4, fps=15, preload_ratio=1, disable_test_split: bool = True, resize_to: Optional[Tuple[int, int]] = None):
+def load_zelda(num_frames=4, fps=15, preload_ratio=1, disable_test_split: bool = True, resize_to: Optional[Tuple[int, int]] = None, **kwargs):
     return _load_video_dataset_pair(
         ZeldaDataset,
         '/data/Zelda oot2d 1 Cut.mp4',
@@ -138,6 +142,7 @@ def load_zelda(num_frames=4, fps=15, preload_ratio=1, disable_test_split: bool =
         preload_ratio=preload_ratio,
         disable_test_split=disable_test_split,
         resize_to=resize_to,
+        **kwargs,
     )
 
 
@@ -185,6 +190,11 @@ def load_data_and_data_loaders(
     preload_ratio=1,
     disable_test_split: bool = True,
     resize_to: Optional[Tuple[int, int]] = None,
+    # Partition params forwarded to VideoHDF5Dataset (used when enable_eval_loss=True)
+    enable_partition: bool = False,
+    partition: str = 'train',
+    train_ratio: float = 0.8,
+    eval_ratio: float = 0.1,
 ):
     common = dict(
         num_frames=num_frames,
@@ -192,6 +202,10 @@ def load_data_and_data_loaders(
         preload_ratio=preload_ratio,
         disable_test_split=disable_test_split,
         resize_to=resize_to,
+        enable_partition=enable_partition,
+        partition=partition,
+        train_ratio=train_ratio,
+        eval_ratio=eval_ratio,
     )
     if dataset == 'PONG':
         training_data, validation_data = load_pong(**common)
@@ -213,6 +227,62 @@ def load_data_and_data_loaders(
     x_train_var = np.var(training_data.data)
 
     return training_data, validation_data, training_loader, validation_loader, x_train_var
+
+
+def load_eval_data_and_loader(
+    dataset,
+    batch_size,
+    num_frames=1,
+    fps=15,
+    preload_ratio=1,
+    train_ratio: float = 0.8,
+    eval_ratio: float = 0.1,
+    resize_to: Optional[Tuple[int, int]] = None,
+):
+    """Load the eval partition for in-training eval-loss monitoring.
+
+    The eval partition is the chronological slice
+    [train_ratio, train_ratio + eval_ratio) of the raw frames.  The DataLoader
+    is intentionally non-distributed — all ranks compute eval loss on the same
+    full eval set independently, and only rank-0 logs the result.
+
+    Returns (eval_data, eval_loader).
+    """
+    common = dict(
+        num_frames=num_frames,
+        fps=fps,
+        preload_ratio=preload_ratio,
+        disable_test_split=True,
+        resize_to=resize_to,
+        enable_partition=True,
+        partition='eval',
+        train_ratio=train_ratio,
+        eval_ratio=eval_ratio,
+    )
+    if dataset == 'PONG':
+        eval_data, _ = load_pong(**common)
+    elif dataset == 'SONIC':
+        eval_data, _ = load_sonic(**common)
+    elif dataset == 'POLE_POSITION':
+        eval_data, _ = load_pole_position(**common)
+    elif dataset == 'PICODOOM':
+        eval_data, _ = load_picodoom(**common)
+    elif dataset == 'ZELDA':
+        eval_data, _ = load_zelda(**common)
+    else:
+        raise ValueError('Invalid dataset')
+
+    eval_loader = DataLoader(
+        eval_data,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=DEFAULT_NUM_WORKERS,
+        pin_memory=DEFAULT_PIN_MEMORY,
+        persistent_workers=DEFAULT_PERSISTENT_WORKERS,
+        prefetch_factor=DEFAULT_PREFETCH_FACTOR,
+        drop_last=False,
+    )
+    return eval_data, eval_loader
 
 
 def readable_timestamp():
