@@ -1,14 +1,14 @@
 # paths (need if not get latest)
-video_tokenizer_path: /localhome/local-triv/tinyworlds/results/2026_06_08_12_51_05_zelda/video_tokenizer/checkpoints/video_tokenizer_step_37500
-latent_actions_path: /localhome/local-triv/tinyworlds/results/2026_06_08_12_51_05_zelda/latent_actions/checkpoints/latent_actions_step_9500
-dynamics_path: /localhome/local-triv/tinyworlds/results/2026_06_08_12_51_05_zelda/dynamics/checkpoints/dynamics_step_98000
+video_tokenizer_path: /localhome/local-triv/tinyworlds/results/2026_06_13_18_13_53_pong/video_tokenizer/checkpoints/video_tokenizer_step_37500
+latent_actions_path: /localhome/local-triv/tinyworlds/results/2026_06_13_18_13_53_pong/latent_actions/checkpoints/latent_actions_step_9500
+dynamics_path: /localhome/local-triv/tinyworlds/results/2026_06_14_07_41_27/dynamics/checkpoints/dynamics_step_99800
 use_latest_checkpoints: false
 
 # inference params
-dataset: ZELDA
+dataset: PONG
 preload_ratio:
 device: cuda # make sure to use correct device
-generation_steps: 5
+generation_steps: 3
 context_window: 3 #4 # 2
 fps: 2
 temperature: 0.5 # 0 is argmax

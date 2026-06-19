@@ -1,21 +1,21 @@
 # Training
-batch_size_per_gpu: 500
-gradient_accumulation_steps: 1
-n_updates: 100000 #300000
-learning_rate: 0.001 #0.01
-log_interval: 200 #2000
+batch_size_per_gpu: 200
+gradient_accumulation_steps: 4   # effective batch = 200 × 4 = 800
+n_updates:  30000 #1500 # 10000
+learning_rate: 0.001
+log_interval: 500           # checkpoint every 500 steps
 
 use_actions: true
 
 # these can vary but for convenience, here
-embed_dim: 32
+embed_dim: 512 # 32
 num_heads: 8
-hidden_dim: 128
-num_blocks: 8
+hidden_dim: 2048 #128
+num_blocks: 18 # 8
 
-# Paths
-video_tokenizer_path: 
-latent_actions_path:
+# Paths (Zelda frozen VT + LAM)
+video_tokenizer_path: results/2026_06_08_12_51_05_zelda/video_tokenizer/checkpoints/video_tokenizer_step_37500
+latent_actions_path: results/2026_06_08_12_51_05_zelda/latent_actions/checkpoints/latent_actions_step_9500
 
 # resume from checkpoint
 checkpoint:

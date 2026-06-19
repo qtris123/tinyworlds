@@ -3,7 +3,7 @@ use_wandb: true
 wandb_project: tinyworlds
 
 # dataset
-dataset: PONG
+dataset: ZELDA
 preload_ratio: 1.0
 
 # shared model params
@@ -17,14 +17,14 @@ n_actions: 4
 # performance
 amp: true
 tf32: true
-compile: true
+compile: false
 
 # distributed launch (torchrun)
 distributed: 
-  use_ddp: True
+  use_ddp: False
   use_fsdp: False
   reshard_after_forward: False
-nproc_per_node: 8 # how many GPUs per node
+nproc_per_node: 1 # how many GPUs per node
 standalone: true # if we're using one node, this eliminates extraneous processes
 
 # stage configs
@@ -47,3 +47,15 @@ use_moe: false
 num_experts: 4
 top_k_experts: 2
 moe_aux_loss_coeff: 0.01
+
+# Eval loss — opt-in feature; disabled by default so the original pipeline is unchanged.
+# When enabled, the dataset is split chronologically into three partitions:
+#   [0, train_ratio)             → training
+#   [train_ratio, +eval_ratio)   → eval  (loss logged every eval_loss_interval steps)
+#   [train_ratio+eval_ratio, 1)  → test  (never loaded during training)
+# A data_partition.yaml file is written to each stage's output directory with
+# the exact frame/clip counts used for each partition.
+enable_eval_loss: true
+train_ratio: 0.8      # fraction of raw frames for training
+eval_ratio: 0.1       # fraction for eval  (test = 1 - train_ratio - eval_ratio)
+eval_loss_interval: 0 # steps between eval-loss computations; 0 = use log_interval
