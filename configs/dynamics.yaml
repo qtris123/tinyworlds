@@ -1,21 +1,37 @@
-# Training
-batch_size_per_gpu: 500
-gradient_accumulation_steps: 1
-n_updates: 100000 #300000
-learning_rate: 0.001 #0.01
-log_interval: 200 #2000
+# Training -- d836767 codebase + QK-Norm + AdamW β2=0.95 + grad-norm logging
+# Resumed from step-8500 of run 2026_06_21_13_02_14 (last healthy checkpoint
+# before the loss-spike at step 8.8k). Optimizer state is intentionally NOT
+# loaded — the saved exp_avg_sq was poisoned (see investigation notes).
+batch_size_per_gpu: 64           # reduced from 75 to fit headroom for QK-Norm activations
+gradient_accumulation_steps: 8   # eff_batch = 512 (≈ prior 525)
+n_updates: 12000                 # remaining budget vs original 20k plan (20000 - 8500 ≈ 11.5k)
+
+learning_rate: 0.001
+log_interval: 500           # checkpoint every 500 steps
 
 use_actions: true
 
-# these can vary but for convenience, here
-embed_dim: 32
+# user-selected big config (dynamics.yaml lines 6-20)
+embed_dim: 512
 num_heads: 8
-hidden_dim: 128
-num_blocks: 8
+hidden_dim: 2048
+num_blocks: 18
 
-# Paths
-video_tokenizer_path: 
-latent_actions_path:
+# AdamW stability tweak: smaller β2 lets v recover from any future spike in
+# ~20 steps instead of the ~1000 steps that froze the prior run.
+adam_beta1: 0.9
+adam_beta2: 0.95
+adam_eps: 1e-8
 
-# resume from checkpoint
-checkpoint:
+# Paths (Zelda frozen VT + LAM)
+video_tokenizer_path: results/2026_06_08_12_51_05_zelda/video_tokenizer/checkpoints/video_tokenizer_step_37500
+latent_actions_path: results/2026_06_08_12_51_05_zelda/latent_actions/checkpoints/latent_actions_step_9500
+
+# eval loss (off by default in this run; train_loss is enough signal)
+enable_eval_loss: false
+
+# Resume model weights from the last healthy checkpoint of the spiked run.
+# load_dynamics_from_checkpoint loads ONLY model_state_dict.pt (not the
+# optimizer), and is called with strict=False so the new QK-Norm parameters
+# can be added on top of the loaded weights.
+checkpoint: results/2026_06_21_13_02_14/dynamics/checkpoints/dynamics_step_8500

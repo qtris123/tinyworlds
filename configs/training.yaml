@@ -3,7 +3,7 @@ use_wandb: true
 wandb_project: tinyworlds
 
 # dataset
-dataset: PONG
+dataset: ZELDA
 preload_ratio: 1.0
 
 # shared model params
@@ -17,14 +17,14 @@ n_actions: 4
 # performance
 amp: true
 tf32: true
-compile: true
+compile: false  # disabled: PyTorch 2.11 inductor bug with this model
 
 # distributed launch (torchrun)
 distributed: 
   use_ddp: True
   use_fsdp: False
   reshard_after_forward: False
-nproc_per_node: 8 # how many GPUs per node
+nproc_per_node: 1 # how many GPUs per node (only 1 GPU available right now)
 standalone: true # if we're using one node, this eliminates extraneous processes
 
 # stage configs
@@ -33,8 +33,8 @@ latent_actions_config: configs/latent_actions.yaml
 dynamics_config: configs/dynamics.yaml
 
 # which stages to run
-run_video_tokenizer: true
-run_latent_actions: true
+run_video_tokenizer: false
+run_latent_actions: false
 run_dynamics: true
 
 # optimizer: "adamw" (default) or "muon" (Newton-Schulz orthogonalized)
