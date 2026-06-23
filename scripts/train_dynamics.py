@@ -8,7 +8,8 @@ from datasets.data_utils import visualize_reconstruction, load_data_and_data_loa
 from tqdm import tqdm
 from einops import rearrange
 from utils.wandb_utils import (
-    init_wandb, log_training_metrics, log_learning_rate, log_system_metrics, finish_wandb, log_action_distribution, log_data_partition
+    init_wandb, log_training_metrics, log_learning_rate, log_system_metrics, finish_wandb, log_action_distribution, log_data_partition,
+    clip_and_log_grad_norm,
 )
 from utils.scheduler_utils import create_cosine_scheduler
 from utils.utils import (
@@ -84,11 +85,14 @@ def main():
         moe_aux_loss_coeff=getattr(args, 'moe_aux_loss_coeff', 0.01),
     ).to(args.device)
     if args.checkpoint:
+        # strict=False lets us load a pre-QK-Norm checkpoint into the current
+        # model (the new q_norm/k_norm params keep their constructor init).
         dynamics_model, _ = load_dynamics_from_checkpoint(
-            checkpoint_path=args.checkpoint, 
-            device=args.device, 
+            checkpoint_path=args.checkpoint,
+            device=args.device,
             model=dynamics_model,
             is_distributed=dist_setup['is_distributed'],
+            strict=False,
         )
 
     # optional DDP, compile, param count, tf32
@@ -249,9 +253,24 @@ def main():
         results['dynamics_losses'].append(loss.detach().cpu())
         results['loss_vals'].append(loss.detach().cpu())
 
-        torch.nn.utils.clip_grad_norm_(unwrap_model(dynamics_model).parameters(), max_norm=1.0)
-        for opt in optimizers:
-            opt.step()
+        # Clip gradients, capture pre-clip norm, log to wandb, and skip the
+        # optimizer step on non-finite grads so one bad batch cannot poison
+        # AdamW's second-moment estimates.
+        pre_clip_norm_val, nonfinite_grad = clip_and_log_grad_norm(
+            unwrap_model(dynamics_model).parameters(),
+            max_norm=1.0,
+            step=i,
+            log_to_wandb=(args.use_wandb and is_main),
+        )
+
+        if nonfinite_grad:
+            for opt in optimizers:
+                opt.zero_grad(set_to_none=True)
+            if is_main:
+                print(f"\n[WARN] non-finite grad-norm at step {i} (norm={pre_clip_norm_val}); skipping optimizer step")
+        else:
+            for opt in optimizers:
+                opt.step()
         for sched in schedulers:
             sched.step()
 

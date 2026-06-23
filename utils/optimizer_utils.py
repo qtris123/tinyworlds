@@ -18,10 +18,13 @@ def create_optimizer(model, args):
 
 def _create_adamw(model, args):
     decay, no_decay = _split_decay_params(model)
+    beta1 = getattr(args, "adam_beta1", 0.9)
+    beta2 = getattr(args, "adam_beta2", 0.95)
+    eps = getattr(args, "adam_eps", 1e-8)
     optimizer = optim.AdamW([
         {"params": decay, "weight_decay": 0.01},
         {"params": no_decay, "weight_decay": 0},
-    ], lr=args.learning_rate, betas=(0.9, 0.999), eps=1e-8, fused=True)
+    ], lr=args.learning_rate, betas=(beta1, beta2), eps=eps, fused=True)
     return [optimizer]
 
 
@@ -63,7 +66,10 @@ def _create_muon_split(model, args):
     if adamw_no_decay:
         adamw_groups.append({"params": adamw_no_decay, "weight_decay": 0})
     if adamw_groups:
-        adamw_opt = optim.AdamW(adamw_groups, lr=lr, betas=(0.9, 0.999), eps=1e-8, fused=True)
+        beta1 = getattr(args, "adam_beta1", 0.9)
+        beta2 = getattr(args, "adam_beta2", 0.95)
+        eps = getattr(args, "adam_eps", 1e-8)
+        adamw_opt = optim.AdamW(adamw_groups, lr=lr, betas=(beta1, beta2), eps=eps, fused=True)
         optimizers.append(adamw_opt)
 
     return optimizers

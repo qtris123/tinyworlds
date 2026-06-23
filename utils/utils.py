@@ -263,8 +263,13 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
     return model, state_cfg
 
 
-def load_dynamics_from_checkpoint(checkpoint_path, device, model = None, is_distributed = False):
-    """Instantiate DynamicsModel from a checkpoint's saved config and load weights."""
+def load_dynamics_from_checkpoint(checkpoint_path, device, model = None, is_distributed = False, strict: bool = True):
+    """Instantiate DynamicsModel from a checkpoint's saved config and load weights.
+
+    Set ``strict=False`` to allow the checkpoint state to be loaded into a
+    model whose architecture has been extended (e.g. new QK-Norm parameters).
+    Missing/unexpected keys are printed so this stays loud.
+    """
     import torch
     from models.dynamics import DynamicsModel
     model_sd = torch.load(Path(checkpoint_path) / MODEL_CHECKPOINT, map_location='cpu', weights_only=True)
@@ -298,14 +303,26 @@ def load_dynamics_from_checkpoint(checkpoint_path, device, model = None, is_dist
     }
     if model is None:
         model = DynamicsModel(**kwargs)
-    set_model_state_dict(
+
+    incompatible = set_model_state_dict(
         model=model,
         model_state_dict=model_sd,
         options=StateDictOptions(
             full_state_dict=True,
             broadcast_from_rank0=is_distributed,
+            strict=strict,
         )
     )
+    if incompatible is not None:
+        missing = getattr(incompatible, 'missing_keys', []) or []
+        unexpected = getattr(incompatible, 'unexpected_keys', []) or []
+        if missing or unexpected:
+            print(f"[load_dynamics_from_checkpoint] strict={strict}")
+            if missing:
+                print(f"  missing in checkpoint ({len(missing)}): {missing[:10]}{' ...' if len(missing) > 10 else ''}")
+            if unexpected:
+                print(f"  unexpected in checkpoint ({len(unexpected)}): {unexpected[:10]}{' ...' if len(unexpected) > 10 else ''}")
+
     model = model.to(device)
     return model, state_cfg
 

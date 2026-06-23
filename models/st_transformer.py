@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 from models.positional_encoding import build_spatial_only_pe, sincos_time
-from models.norms import AdaptiveNormalizer
+from models.norms import AdaptiveNormalizer, RMSNorm
 from models.patch_embed import PatchEmbedding
 import math
 import torch.nn.functional as F
@@ -20,6 +20,12 @@ class SpatialAttention(nn.Module):
         self.v_proj = nn.Linear(embed_dim, embed_dim)
         self.out_proj = nn.Linear(embed_dim, embed_dim)
 
+        # QK-Norm: bounds q.k magnitude regardless of input scale. Prevents bf16
+        # softmax saturation on deep/wide nets where head_dim >= ~32. See Gemma-2,
+        # PaLM-2. Init weight=1 keeps initial behavior equivalent to no-QK-norm.
+        self.q_norm = RMSNorm(self.head_dim)
+        self.k_norm = RMSNorm(self.head_dim)
+
         self.norm = AdaptiveNormalizer(embed_dim, conditioning_dim)
 
     def forward(self, x, conditioning=None):
@@ -30,6 +36,9 @@ class SpatialAttention(nn.Module):
         q = rearrange(self.q_proj(x), 'B T P (H D) -> (B T) H P D', H=self.num_heads)
         k = rearrange(self.k_proj(x), 'B T P (H D) -> (B T) H P D', H=self.num_heads)
         v = rearrange(self.v_proj(x), 'B T P (H D) -> (B T) H P D', H=self.num_heads)
+
+        q = self.q_norm(q)
+        k = self.k_norm(k)
 
         k_t = k.transpose(-2, -1) # [(B*T), H, P, D, P]
 
@@ -59,7 +68,11 @@ class TemporalAttention(nn.Module):
         self.k_proj = nn.Linear(embed_dim, embed_dim)
         self.v_proj = nn.Linear(embed_dim, embed_dim)
         self.out_proj = nn.Linear(embed_dim, embed_dim)
-        
+
+        # QK-Norm: see SpatialAttention. Same rationale.
+        self.q_norm = RMSNorm(self.head_dim)
+        self.k_norm = RMSNorm(self.head_dim)
+
         self.norm = AdaptiveNormalizer(embed_dim, conditioning_dim)
         self.causal = causal
         
@@ -71,6 +84,9 @@ class TemporalAttention(nn.Module):
         q = rearrange(self.q_proj(x), 'b t p (h d) -> (b p) h t d', h=self.num_heads)
         k = rearrange(self.k_proj(x), 'b t p (h d) -> (b p) h t d', h=self.num_heads)
         v = rearrange(self.v_proj(x), 'b t p (h d) -> (b p) h t d', h=self.num_heads) # [B, P, H, T, D]
+
+        q = self.q_norm(q)
+        k = self.k_norm(k)
 
         k_t = k.transpose(-2, -1) # [(B*P), H, T, D, T]
 
