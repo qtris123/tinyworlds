@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 from models.positional_encoding import build_spatial_only_pe, sincos_time
-from models.norms import AdaptiveNormalizer
+from models.norms import AdaptiveNormalizer, RMSNorm
 from models.patch_embed import PatchEmbedding
 import math
 import torch.nn.functional as F
@@ -20,26 +20,32 @@ class SpatialAttention(nn.Module):
         self.v_proj = nn.Linear(embed_dim, embed_dim)
         self.out_proj = nn.Linear(embed_dim, embed_dim)
 
+        # QK-Norm: bounds q.k magnitude regardless of input scale. Prevents bf16
+        # softmax saturation on deep/wide nets where head_dim >= ~32. See Gemma-2,
+        # PaLM-2. Init weight=1 keeps initial behavior equivalent to no-QK-norm.
+        self.q_norm = RMSNorm(self.head_dim)
+        self.k_norm = RMSNorm(self.head_dim)
+
         self.norm = AdaptiveNormalizer(embed_dim, conditioning_dim)
 
     def forward(self, x, conditioning=None):
         B, T, P, E = x.shape
 
-        # project to Q, K, V and split into heads: [B, T, P, E] -> [(B*T), H, P, E/H]
+        # project to Q, K, V and split into heads: [B, T, P, E] -> [(B*T), H, P, E/H] 
+        # (4 dims to work with torch compile attention)
         q = rearrange(self.q_proj(x), 'B T P (H D) -> (B T) H P D', H=self.num_heads)
         k = rearrange(self.k_proj(x), 'B T P (H D) -> (B T) H P D', H=self.num_heads)
         v = rearrange(self.v_proj(x), 'B T P (H D) -> (B T) H P D', H=self.num_heads)
 
-        # Flash Attention: never materializes the [B*T, H, P, P] weight matrix,
-        # recomputing it on-the-fly during backward instead of storing it.
-        attn_output = F.scaled_dot_product_attention(q, k, v)  # [(B*T), H, P, D]
+        q = self.q_norm(q)
+        k = self.k_norm(k)
 
-        # Manual attention (OOMs at large batch due to storing [B*T, H, P, P]):
-        # k_t = k.transpose(-2, -1)
-        # scores = torch.matmul(q, k_t) / math.sqrt(self.head_dim) # [(B*T), H, P, P]
-        # attn_weights = F.softmax(scores, dim=-1)
-        # attn_output = torch.matmul(attn_weights, v)
+        k_t = k.transpose(-2, -1) # [(B*T), H, P, D, P]
 
+        # attention(q, k, v) = softmax(qk^T / sqrt(d)) v
+        scores = torch.matmul(q, k_t) / math.sqrt(self.head_dim) # [(B*T), H, P, P]
+        attn_weights = F.softmax(scores, dim=-1) # [(B*T), H, P, P]
+        attn_output = torch.matmul(attn_weights, v) # [(B*T), H, P, D]
         attn_output = rearrange(attn_output, '(B T) H P D -> B T P (H D)', B=B, T=T) # [B, T, P, E]
 
         # out proj to mix head information
@@ -62,31 +68,38 @@ class TemporalAttention(nn.Module):
         self.k_proj = nn.Linear(embed_dim, embed_dim)
         self.v_proj = nn.Linear(embed_dim, embed_dim)
         self.out_proj = nn.Linear(embed_dim, embed_dim)
-        
+
+        # QK-Norm: see SpatialAttention. Same rationale.
+        self.q_norm = RMSNorm(self.head_dim)
+        self.k_norm = RMSNorm(self.head_dim)
+
         self.norm = AdaptiveNormalizer(embed_dim, conditioning_dim)
         self.causal = causal
         
     def forward(self, x, conditioning=None):
         B, T, P, E = x.shape
         
-        # project to Q, K, V and split into heads: [B, T, P, E] -> [(B*P), H, T, D]
+        # project to Q, K, V and split into heads: [B, T, P, E] -> [(B*P), H, T, D] 
+        # (4 dims to work with torch compile attention)
         q = rearrange(self.q_proj(x), 'b t p (h d) -> (b p) h t d', h=self.num_heads)
         k = rearrange(self.k_proj(x), 'b t p (h d) -> (b p) h t d', h=self.num_heads)
-        v = rearrange(self.v_proj(x), 'b t p (h d) -> (b p) h t d', h=self.num_heads)
+        v = rearrange(self.v_proj(x), 'b t p (h d) -> (b p) h t d', h=self.num_heads) # [B, P, H, T, D]
 
-        # Flash Attention with causal mask for temporal direction.
-        # is_causal=True replaces the manual triu mask and avoids storing [B*P, H, T, T].
-        attn_output = F.scaled_dot_product_attention(q, k, v, is_causal=self.causal)  # [(B*P), H, T, D]
+        q = self.q_norm(q)
+        k = self.k_norm(k)
 
-        # Manual attention (kept for reference):
-        # k_t = k.transpose(-2, -1)
-        # scores = torch.matmul(q, k_t) / math.sqrt(self.head_dim) # [(B*P), H, T, T]
-        # if self.causal:
-        #     mask = torch.triu(torch.ones(T, T), diagonal=1).bool().to(x.device)
-        #     scores = scores.masked_fill(mask, -torch.inf)
-        # attn_weights = F.softmax(scores, dim=-1)
-        # attn_output = torch.matmul(attn_weights, v)
+        k_t = k.transpose(-2, -1) # [(B*P), H, T, D, T]
 
+        # attention(q, k, v) = softmax(qk^T / sqrt(d)) v
+        scores = torch.matmul(q, k_t) / math.sqrt(self.head_dim) # [(B*P), H, T, T]
+
+        # causal mask for each token t in seq, mask out all tokens to the right of t (after t)
+        if self.causal:
+            mask = torch.triu(torch.ones(T, T), diagonal=1).bool().to(x.device)
+            scores = scores.masked_fill(mask, -torch.inf) # [(B*P), H, T, T]
+
+        attn_weights = F.softmax(scores, dim=-1) # [(B*P), H, T, T]
+        attn_output = torch.matmul(attn_weights, v) # [(B*P), H, T, D]
         attn_output = rearrange(attn_output, '(b p) h t d -> b t p (h d)', b=B, p=P) # [B, T, P, E]
 
         # out proj to mix head information

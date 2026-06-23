@@ -112,6 +112,9 @@ class VideoTokenizerConfig:
 	optimizer: str = "adamw"
 	muon_momentum: float = 0.95
 	muon_backend_steps: int = 5
+	adam_beta1: float = 0.9
+	adam_beta2: float = 0.95   # lowered from 0.999 to shorten exp_avg_sq memory
+	adam_eps: float = 1e-8
 	# device
 	device: DeviceType = DeviceType.CUDA
 	# other params
@@ -163,6 +166,9 @@ class LatentActionsConfig:
 	optimizer: str = "adamw"
 	muon_momentum: float = 0.95
 	muon_backend_steps: int = 5
+	adam_beta1: float = 0.9
+	adam_beta2: float = 0.95
+	adam_eps: float = 1e-8
 	# device
 	device: DeviceType = DeviceType.CUDA
 	# other params
@@ -226,6 +232,9 @@ class DynamicsConfig:
 	optimizer: str = "adamw"
 	muon_momentum: float = 0.95
 	muon_backend_steps: int = 5
+	adam_beta1: float = 0.9
+	adam_beta2: float = 0.95
+	adam_eps: float = 1e-8
 	# device
 	device: DeviceType = DeviceType.CUDA
 	# other params
@@ -296,6 +305,9 @@ class TrainingConfig:
 	optimizer: str = "adamw"
 	muon_momentum: float = 0.95
 	muon_backend_steps: int = 5
+	adam_beta1: float = 0.9
+	adam_beta2: float = 0.95
+	adam_eps: float = 1e-8
 	# Eval loss — opt-in feature propagated to all stage configs
 	enable_eval_loss: bool = False
 	eval_loss_interval: int = 0

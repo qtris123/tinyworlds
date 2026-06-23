@@ -10,7 +10,7 @@ from utils.utils import readable_timestamp, save_training_state, prepare_stage_d
 from utils.config import LatentActionsConfig, load_stage_config_merged
 import yaml
 from utils.utils import save_training_state, load_latent_actions_from_checkpoint
-from utils.wandb_utils import init_wandb, log_system_metrics, finish_wandb, log_action_distribution, log_learning_rate, log_data_partition
+from utils.wandb_utils import init_wandb, log_system_metrics, finish_wandb, log_action_distribution, log_learning_rate, log_data_partition, clip_and_log_grad_norm
 from dataclasses import asdict
 from utils.distributed import init_distributed_from_env, prepare_model_for_distributed, unwrap_model, print_param_count_if_main, cleanup_distributed
 from torch.distributed.fsdp import FSDPModule
@@ -179,9 +179,20 @@ def main():
                         model.set_requires_gradient_sync(True)
                 loss.backward()
 
-        torch.nn.utils.clip_grad_norm_(unwrap_model(model).parameters(), max_norm=1.0)
-        for opt in optimizers:
-            opt.step()
+        pre_clip_norm_val, nonfinite_grad = clip_and_log_grad_norm(
+            unwrap_model(model).parameters(),
+            max_norm=1.0,
+            step=i,
+            log_to_wandb=(args.use_wandb and is_main),
+        )
+        if nonfinite_grad:
+            for opt in optimizers:
+                opt.zero_grad(set_to_none=True)
+            if is_main:
+                print(f"\n[WARN] non-finite grad-norm at step {i} (norm={pre_clip_norm_val}); skipping optimizer step")
+        else:
+            for opt in optimizers:
+                opt.step()
         for sched in schedulers:
             sched.step()
 
