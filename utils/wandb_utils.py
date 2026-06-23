@@ -1,8 +1,9 @@
 import wandb
 import torch
 import os
+import math
 import time
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 
 def init_wandb(project_name: str, config: Dict[str, Any], run_name: Optional[str] = None) -> wandb.run:
@@ -56,6 +57,37 @@ def log_action_distribution(action_indices: torch.Tensor, step: int, n_actions: 
         "action_entropy": float(-(probs * (probs + 1e-8).log()).sum()),
         "unique_actions": int((counts > 0).sum().item()),
     }, step=step)
+
+
+def clip_and_log_grad_norm(
+    parameters: Iterable[torch.nn.Parameter],
+    max_norm: float = 1.0,
+    *,
+    step: int,
+    log_to_wandb: bool = True,
+    prefix: str = "train",
+) -> Tuple[float, bool]:
+    """Clip gradients to ``max_norm`` and report the pre-clip global L2 norm.
+
+    Returns ``(pre_clip_norm, nonfinite)``. The caller decides whether to skip
+    the optimizer step when ``nonfinite`` is True (recommended: skip and zero
+    the grads so a bad batch cannot poison AdamW's moment estimates).
+
+    When ``log_to_wandb`` is True and a wandb run is active, logs:
+      - ``{prefix}/grad_norm``    — pre-clip global L2 norm
+      - ``{prefix}/grad_clipped`` — 1.0 if the norm exceeded ``max_norm`` else 0.0
+      - ``{prefix}/grad_skipped`` — 1.0 if the norm was NaN/Inf else 0.0
+    """
+    pre_clip = torch.nn.utils.clip_grad_norm_(parameters, max_norm=max_norm)
+    pre_clip_val = float(pre_clip.detach().cpu()) if torch.is_tensor(pre_clip) else float(pre_clip)
+    nonfinite = not math.isfinite(pre_clip_val)
+    if log_to_wandb and wandb.run is not None:
+        wandb.log({
+            f"{prefix}/grad_norm": pre_clip_val,
+            f"{prefix}/grad_clipped": float((not nonfinite) and pre_clip_val > max_norm),
+            f"{prefix}/grad_skipped": float(nonfinite),
+        }, step=step)
+    return pre_clip_val, nonfinite
 
 
 def log_system_metrics(step: int):
