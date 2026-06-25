@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+from pathlib import Path
 import torch
 import os
 from tqdm import tqdm
@@ -27,6 +28,7 @@ import yaml
 from dataclasses import asdict
 from utils.distributed import init_distributed_from_env, prepare_model_for_distributed, unwrap_model, print_param_count_if_main, cleanup_distributed
 from torch.distributed.fsdp import FSDPModule
+from torch.distributed.checkpoint.state_dict import set_optimizer_state_dict, StateDictOptions
 
 def main():
     # dynamics config merged with training_config.yaml (training takes priority), plus CLI overrides
@@ -126,6 +128,65 @@ def main():
     schedulers = [create_cosine_scheduler(opt, args.n_updates) for opt in optimizers]
     train_ctx = torch.amp.autocast(args.device, enabled=True, dtype=torch.bfloat16) if args.amp and not args.distributed.use_fsdp else nullcontext()
 
+    # ------------------------------------------------------------------
+    # Resume: when --checkpoint points at a step_N directory, load the
+    # optimizer and scheduler that were saved alongside model_state_dict.pt
+    # and continue the global step counter. Without this block, --checkpoint
+    # would only load model weights, which (a) cold-starts AdamW's
+    # exp_avg_sq (causing a transient ~1/(1-β2) ≈ 20-step blow-up of the
+    # effective step under β2=0.95) and (b) restarts the cosine scheduler
+    # from warmup step 0 with the wrong absolute LR for the remaining run.
+    # See .cursor/skills/tinyworlds-training-resume.
+    # ------------------------------------------------------------------
+    start_step = 0
+    if args.checkpoint:
+        ckpt_dir = Path(args.checkpoint)
+        state_blob = torch.load(ckpt_dir / 'state.pt', map_location='cpu', weights_only=False)
+
+        # primary optimizer state.
+        # The file was saved via get_optimizer_state_dict(... full_state_dict=True),
+        # which uses *named* (FQN) parameter keys like
+        # 'transformer.blocks.0.spatial_attn.q_proj.weight' rather than the integer
+        # positional keys that bare optim.load_state_dict() expects.
+        # set_optimizer_state_dict() handles the FQN→positional remap against the
+        # live model and works for both DDP/FSDP and plain nn.Module. Every rank
+        # loads the same on-disk file (matches how model_state_dict.pt is loaded
+        # in load_dynamics_from_checkpoint), so no rank-0 broadcast is needed.
+        opt_sd = torch.load(ckpt_dir / 'optim_state_dict.pt', map_location='cpu', weights_only=False)
+        set_optimizer_state_dict(
+            model=dynamics_model,
+            optimizers=optimizers[0],
+            optim_state_dict=opt_sd,
+            options=StateDictOptions(full_state_dict=True, broadcast_from_rank0=False),
+        )
+
+        # split-optimizer case (Muon+AdamW). Saved on rank 0 only by the
+        # trainer, so the file may or may not be present.
+        all_opt_path = ckpt_dir / 'all_optimizers.pt'
+        if len(optimizers) > 1 and all_opt_path.exists():
+            all_opt = torch.load(all_opt_path, map_location='cpu', weights_only=False)
+            for j, o in enumerate(optimizers):
+                o.load_state_dict(all_opt[f'optimizer_{j}'])
+
+        # primary scheduler state (lives inside state.pt). LambdaLR is a
+        # pure function of last_epoch + base_lrs, so this fully restores
+        # the LR trajectory provided n_updates is unchanged.
+        if state_blob.get('scheduler_state_dict') is not None:
+            schedulers[0].load_state_dict(state_blob['scheduler_state_dict'])
+        all_sched_path = ckpt_dir / 'all_schedulers.pt'
+        if len(schedulers) > 1 and all_sched_path.exists():
+            all_sched = torch.load(all_sched_path, map_location='cpu', weights_only=False)
+            for j, s in enumerate(schedulers):
+                s.load_state_dict(all_sched[f'scheduler_{j}'])
+
+        saved_step = int(state_blob.get('step') or 0)
+        start_step = saved_step + 1
+        if is_main:
+            lr_now = optimizers[0].param_groups[0]['lr']
+            print(f"[resume] checkpoint: {args.checkpoint}")
+            print(f"[resume] saved_step={saved_step} → start_step={start_step}, lr={lr_now:.3e}")
+            print(f"[resume] n_updates={args.n_updates} (remaining={max(0, args.n_updates - start_step)})")
+
     results = {
         'n_updates': 0,
         'dynamics_losses': [],
@@ -209,9 +270,29 @@ def main():
 
     train_iter = iter(training_loader)
 
+    # Resume: fast-forward the data iterator so the next batch consumed at
+    # i=start_step is the one that the original run would have consumed.
+    # `DistributedSampler` here is constructed with shuffle=True but
+    # `set_epoch()` is never called from the train loop (datasets/data_utils.py:153),
+    # so the per-rank shuffled index order is deterministic across restarts as
+    # long as world_size, batch_size_per_gpu, and gradient_accumulation_steps
+    # are identical to the original run. Set NG_RESUME_FAST_FORWARD=0 to skip
+    # this and accept that the first ~start_step*grad_accum samples will be
+    # replayed over the remaining run.
+    if start_step > 0 and os.environ.get('NG_RESUME_FAST_FORWARD', '1') == '1':
+        n_to_skip = start_step * args.gradient_accumulation_steps
+        if is_main:
+            print(f"[resume] fast-forwarding dataloader by {n_to_skip} batches/rank")
+        for _ in tqdm(range(n_to_skip), desc='ff-loader', disable=not is_main):
+            try:
+                next(train_iter)
+            except StopIteration:
+                train_iter = iter(training_loader)
+                next(train_iter)
+
     use_moe = getattr(args, 'use_moe', False)
 
-    for i in tqdm(range(0, args.n_updates), disable=not is_main):
+    for i in tqdm(range(start_step, args.n_updates), disable=not is_main):
         for opt in optimizers:
             opt.zero_grad(set_to_none=True)
         if isinstance(dynamics_model, FSDPModule):
