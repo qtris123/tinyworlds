@@ -4,7 +4,7 @@
 # loaded — the saved exp_avg_sq was poisoned (see investigation notes).
 batch_size_per_gpu: 64           # reduced from 75 to fit headroom for QK-Norm activations
 gradient_accumulation_steps: 8   # eff_batch = 512 (≈ prior 525)
-n_updates: 12000                 # remaining budget vs original 20k plan (20000 - 8500 ≈ 11.5k)
+n_updates: 30000                 # remaining budget vs original 20k plan (20000 - 8500 ≈ 11.5k)
 
 learning_rate: 0.001
 log_interval: 500           # checkpoint every 500 steps
@@ -12,10 +12,10 @@ log_interval: 500           # checkpoint every 500 steps
 use_actions: true
 
 # user-selected big config (dynamics.yaml lines 6-20)
-embed_dim: 512
+embed_dim: 512 # 25
 num_heads: 8
-hidden_dim: 2048
-num_blocks: 18
+hidden_dim: 2048 #1024
+num_blocks: 18 #8
 
 # AdamW stability tweak: smaller β2 lets v recover from any future spike in
 # ~20 steps instead of the ~1000 steps that froze the prior run.

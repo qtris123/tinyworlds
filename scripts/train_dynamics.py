@@ -44,12 +44,17 @@ def main():
         print(f"Dynamics Training")
         print(f"Results will be saved in {stage_dir}")
 
-    # load video tokenizer and latent action model
+    # load video tokenizer and latent action model.
+    # strict=False here tolerates frozen checkpoints saved before QK-Norm was added
+    # to STTransformer — the new q_norm/k_norm scale params keep their constructor
+    # init (≈ identity), which matches how these models behaved during their
+    # original training. Both modules are then put into eval() and frozen.
     if os.path.isdir(args.video_tokenizer_path):
         video_tokenizer, vq_ckpt = load_videotokenizer_from_checkpoint(
             checkpoint_path=args.video_tokenizer_path, 
             device=args.device, 
             is_distributed=dist_setup['is_distributed'],
+            strict=False,
         )
         video_tokenizer.eval()
         for p in video_tokenizer.parameters():
@@ -61,6 +66,7 @@ def main():
             checkpoint_path=args.latent_actions_path, 
             device=args.device,
             is_distributed=dist_setup['is_distributed'],
+            strict=False,
         )
         unwrap_model(latent_action_model).eval()
         for p in unwrap_model(latent_action_model).parameters():
@@ -221,13 +227,18 @@ def main():
 
             x = x.to(args.device, non_blocking=True)  # [batch_size, seq_len, channels, height, width]
 
-            # get video tokens for batch
-            video_tokens = video_tokenizer.tokenize(x) # [B, T, P]
-            video_latents = video_tokenizer.quantizer.get_latents_from_indices(video_tokens, dim=-1) # [B, T, P, L]
-            if args.use_actions:
-                quantized_actions = latent_action_model.encode(x)  # [B, T - 1, A]
-            else:
-                quantized_actions = None
+            # VT and LAM are frozen — wrap their forwards in no_grad so PyTorch
+            # never holds onto their intermediate activations. With the large LAM
+            # (67M, 8-block, embed=512) this matters: keeping its forward graph
+            # alive blows the 96 GiB GH200 budget once combined with the 18-block
+            # dynamics transformer's own activation memory.
+            with torch.no_grad():
+                video_tokens = video_tokenizer.tokenize(x) # [B, T, P]
+                video_latents = video_tokenizer.quantizer.get_latents_from_indices(video_tokens, dim=-1) # [B, T, P, L]
+                if args.use_actions:
+                    quantized_actions = latent_action_model.encode(x)  # [B, T - 1, A]
+                else:
+                    quantized_actions = None
 
             # predict masked frame latents with dynamics model (masking in dynamics model)
             with train_ctx:
@@ -274,6 +285,26 @@ def main():
         for sched in schedulers:
             sched.step()
 
+        # Memory probe — opt-in via NG_MEMPROBE=1, prints peak/current memory
+        # for every rank at the end of every step.  Cheap; gated so it stays out
+        # of normal training output. Reset stats at step 1 so we don't measure
+        # the one-shot startup allocation peak.
+        if os.environ.get('NG_MEMPROBE') == '1':
+            if i == 1:
+                torch.cuda.reset_peak_memory_stats()
+            if i > 0:
+                rank = dist_setup['device_mesh'].get_rank() if dist_setup['device_mesh'] is not None else 0
+                peak_alloc = torch.cuda.max_memory_allocated() / 1e9
+                peak_reserved = torch.cuda.max_memory_reserved() / 1e9
+                curr_alloc = torch.cuda.memory_allocated() / 1e9
+                print(
+                    f"[memprobe rank={rank} step={i:04d}] "
+                    f"peak_alloc={peak_alloc:6.2f} GiB  "
+                    f"peak_reserved={peak_reserved:6.2f} GiB  "
+                    f"curr_alloc={curr_alloc:6.2f} GiB",
+                    flush=True,
+                )
+
         # wandb logging
         if args.use_wandb and is_main:
             log_dict = {'train/loss': loss.item()}
@@ -291,9 +322,14 @@ def main():
                 action_indices = latent_action_model.quantizer.get_indices_from_latents(quantized_actions)
                 log_action_distribution(action_indices, i, args.n_actions)
 
-        # eval loss — computed before checkpoint so both metrics land at the same step
+        # eval loss — computed before checkpoint so both metrics land at the same step.
+        # NOTE: we deliberately keep dynamics_model in train mode (no .eval()/.train()
+        # toggle) because DynamicsModel.forward gates the masking and loss path on
+        # `training and self.training` — flipping to eval() would short-circuit the
+        # loss path and return None. The model has no dropout/BN so train-mode is
+        # numerically identical here, and `torch.no_grad()` is what actually prevents
+        # gradient computation / autograd-graph retention.
         if enable_eval_loss and eval_loader is not None and (i % eval_loss_interval == 0):
-            dynamics_model.eval()
             eval_loss_vals = []
             with torch.no_grad():
                 for x_eval, _ in eval_loader:
@@ -310,7 +346,6 @@ def main():
                             conditioning=eval_quantized_actions, targets=eval_video_tokens,
                         )
                     eval_loss_vals.append(eval_loss_batch.item())
-            dynamics_model.train()
             if eval_loss_vals and is_main:
                 mean_eval_loss = sum(eval_loss_vals) / len(eval_loss_vals)
                 if args.use_wandb:
@@ -341,15 +376,18 @@ def main():
 
             hyperparameters = args.__dict__
             ckpt_path = save_training_state(dynamics_model, optimizers[0], schedulers[0], hyperparameters, checkpoints_dir, prefix='dynamics', step=i)
-            # save secondary optimizer/scheduler state when using split optimizers (Muon+AdamW)
-            if len(optimizers) > 1:
+            # save secondary optimizer/scheduler state when using split optimizers (Muon+AdamW).
+            # Gate to rank 0: otherwise every DDP rank races on the same file
+            # path, same bug pattern that wiped 28/30 model_state_dict.pt files
+            # in 2026_06_23_09_31_58_30k (see save_training_state docstring).
+            if len(optimizers) > 1 and is_main:
                 import pathlib
                 torch.save(
-                    {f'optimizer_{i}': o.state_dict() for i, o in enumerate(optimizers)},
+                    {f'optimizer_{j}': o.state_dict() for j, o in enumerate(optimizers)},
                     pathlib.Path(ckpt_path) / 'all_optimizers.pt',
                 )
                 torch.save(
-                    {f'scheduler_{i}': s.state_dict() for i, s in enumerate(schedulers)},
+                    {f'scheduler_{j}': s.state_dict() for j, s in enumerate(schedulers)},
                     pathlib.Path(ckpt_path) / 'all_schedulers.pt',
                 )
             if is_main:

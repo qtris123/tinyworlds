@@ -162,10 +162,28 @@ def run_command(cmd, description):
 def save_training_state(model, optimizer, scheduler, config, checkpoints_dir, prefix, step):
     """Save a checkpoint with model/optimizer/scheduler and the exact config.
     The filename includes the global step and a timestamp for uniqueness.
+
+    Under DDP/FSDP, `get_model_state_dict(full_state_dict=True, cpu_offload=True)`
+    is a collective: it MUST be called on every rank, but it only returns a
+    populated dict on rank 0 (other ranks get an empty dict). Earlier versions
+    of this function then had every rank race-write to the same file path,
+    which let a non-rank-0 worker overwrite rank 0's real state dict with an
+    empty one ~75% of the time on a 4-rank setup — see e.g. the
+    2026_06_23_09_31_58_30k dynamics run where 28 of 30 checkpoints ended up
+    as 1315-byte empty-dict zip archives.
+
+    Fix: every rank still participates in the gather (required for the
+    collective to make progress), but only rank 0 actually does the file I/O,
+    and a barrier at the end keeps the other ranks from racing into the next
+    iteration's collective while rank 0 is mid-write.
     """
     import torch
+    import torch.distributed as dist
+
     ts = readable_timestamp()
-    if isinstance(model, (FSDPModule, DDP)):
+    is_distributed_model = isinstance(model, (FSDPModule, DDP))
+
+    if is_distributed_model:
         state_dict = get_model_state_dict(
             model=model,
             options=StateDictOptions(
@@ -185,23 +203,45 @@ def save_training_state(model, optimizer, scheduler, config, checkpoints_dir, pr
         # Avoid saving the model with _orig_mod prefix if it's compiled
         state_dict = getattr(model, '_orig_mod', model).state_dict()
         optimizer_state_dict = optimizer.state_dict()
+
     state = {
         'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
         'config': config,
         'step': int(step) if step is not None else None,
         'timestamp': ts,
     }
-    os.makedirs(checkpoints_dir, exist_ok=True)
+
     ckpt_path = os.path.join(checkpoints_dir, f"{prefix}_step_{int(step) if step is not None else 0}")
-    os.makedirs(ckpt_path, exist_ok=True)
-    torch.save(state_dict, Path(ckpt_path) / MODEL_CHECKPOINT)
-    torch.save(optimizer_state_dict, Path(ckpt_path) / OPTIMIZER_CHECKPOINT)
-    torch.save(state, Path(ckpt_path) / STATE)
+
+    # Only rank 0 owns the file writes. In the single-process case
+    # dist.is_initialized() is False, so this collapses to "always write".
+    dist_initialized = dist.is_available() and dist.is_initialized()
+    is_rank_zero = (not dist_initialized) or (dist.get_rank() == 0)
+
+    if is_rank_zero:
+        os.makedirs(checkpoints_dir, exist_ok=True)
+        os.makedirs(ckpt_path, exist_ok=True)
+        torch.save(state_dict, Path(ckpt_path) / MODEL_CHECKPOINT)
+        torch.save(optimizer_state_dict, Path(ckpt_path) / OPTIMIZER_CHECKPOINT)
+        torch.save(state, Path(ckpt_path) / STATE)
+
+    # Sync ranks so non-rank-0 workers don't enter the next collective
+    # (`get_model_state_dict` at the next save, or whatever comes next) while
+    # rank 0 is still flushing the checkpoint to disk.
+    if dist_initialized:
+        dist.barrier()
+
     return ckpt_path
 
 
-def load_videotokenizer_from_checkpoint(checkpoint_path, device, model = None, is_distributed = False):
-    """Instantiate VideoTokenizer from a checkpoint's saved config and load weights."""
+def load_videotokenizer_from_checkpoint(checkpoint_path, device, model = None, is_distributed = False, strict: bool = True):
+    """Instantiate VideoTokenizer from a checkpoint's saved config and load weights.
+
+    Set ``strict=False`` to allow loading a checkpoint that predates the current
+    model architecture (e.g. a pre-QK-Norm VT into a VideoTokenizer that now has
+    ``q_norm`` / ``k_norm`` parameters). Missing/unexpected keys are printed so
+    the caller can see what the mismatch was.
+    """
     import torch
     from models.video_tokenizer import VideoTokenizer
     model_sd = torch.load(Path(checkpoint_path) / MODEL_CHECKPOINT, map_location='cpu', weights_only=True)
@@ -220,20 +260,36 @@ def load_videotokenizer_from_checkpoint(checkpoint_path, device, model = None, i
     }
     if model is None:
         model = VideoTokenizer(**kwargs)
-    set_model_state_dict(
+    incompatible = set_model_state_dict(
         model=model,
         model_state_dict=model_sd,
         options=StateDictOptions(
             full_state_dict=True,
             broadcast_from_rank0=is_distributed,
+            strict=strict,
         ),
     )
+    if incompatible is not None:
+        missing = getattr(incompatible, 'missing_keys', []) or []
+        unexpected = getattr(incompatible, 'unexpected_keys', []) or []
+        if missing or unexpected:
+            print(f"[load_videotokenizer_from_checkpoint] strict={strict}")
+            if missing:
+                print(f"  missing in checkpoint ({len(missing)}): {missing[:10]}{' ...' if len(missing) > 10 else ''}")
+            if unexpected:
+                print(f"  unexpected in checkpoint ({len(unexpected)}): {unexpected[:10]}{' ...' if len(unexpected) > 10 else ''}")
     model = model.to(device)
     return model, state_cfg
 
 
-def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, is_distributed = False):
-    """Instantiate LatentActionModel from a checkpoint's saved config and load weights."""
+def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, is_distributed = False, strict: bool = True):
+    """Instantiate LatentActionModel from a checkpoint's saved config and load weights.
+
+    Set ``strict=False`` to allow loading a checkpoint that predates the current
+    model architecture (e.g. a pre-QK-Norm LAM into a LatentActionModel that now
+    has ``q_norm`` / ``k_norm`` parameters). Missing/unexpected keys are printed
+    so the caller can see what the mismatch was.
+    """
     import torch
     from models.latent_actions import LatentActionModel
     model_sd = torch.load(Path(checkpoint_path) / MODEL_CHECKPOINT, map_location='cpu', weights_only=True)
@@ -251,14 +307,24 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
     }
     if model is None:
         model = LatentActionModel(**kwargs)
-    set_model_state_dict(
+    incompatible = set_model_state_dict(
         model=model,
         model_state_dict=model_sd,
         options=StateDictOptions(
             full_state_dict=True,
             broadcast_from_rank0=is_distributed,
+            strict=strict,
         ),
     )
+    if incompatible is not None:
+        missing = getattr(incompatible, 'missing_keys', []) or []
+        unexpected = getattr(incompatible, 'unexpected_keys', []) or []
+        if missing or unexpected:
+            print(f"[load_latent_actions_from_checkpoint] strict={strict}")
+            if missing:
+                print(f"  missing in checkpoint ({len(missing)}): {missing[:10]}{' ...' if len(missing) > 10 else ''}")
+            if unexpected:
+                print(f"  unexpected in checkpoint ({len(unexpected)}): {unexpected[:10]}{' ...' if len(unexpected) > 10 else ''}")
     model = model.to(device)
     return model, state_cfg
 

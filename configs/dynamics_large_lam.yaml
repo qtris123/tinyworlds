@@ -1,0 +1,47 @@
+# Dynamics stage — fresh 30k-step run on 4× GH200 (DDP) with the large LAM (67M).
+#
+# Wires together:
+#   * Video tokenizer:   results/2026_06_08_12_51_05_zelda/video_tokenizer/checkpoints/video_tokenizer_step_37500
+#   * Latent action mdl: results/large_action_model   (67M Genie-style LAM, n_actions=4, embed=512/hidden=2048/8-block)
+#
+# Effective batch = batch_size_per_gpu × gradient_accumulation_steps × nproc_per_node = 32 × 4 × 4 = 512
+# (matches the proven-stable LR / AdamW β2 recipe carried over from configs/dynamics.yaml).
+#
+# Per-GPU memory budget (empirical, 4× GH200 96 GiB, DDP, AMP-bf16):
+#   * bs/GPU=128 → OOM at ~93 GiB during the first FiLM-modulated norm (forward).
+#   * bs/GPU=64  → OOM during backward at ~91 GiB (18-block / 512-dim / 2048-hidden
+#                  dynamics transformer holds a large activation graph; per-block
+#                  cost is dominated by FFN intermediates at hidden_dim=2048).
+#   * bs/GPU=32  → fits comfortably (~70 GiB peak). Locked in.
+# Launcher exports PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to mitigate
+# fragmentation under DDP.
+
+batch_size_per_gpu: 32
+gradient_accumulation_steps: 4
+n_updates: 30000
+
+learning_rate: 0.001
+log_interval: 1000              # checkpoint + visualization every 1k steps (30 ckpts over the run)
+
+use_actions: true
+
+# 18-block / 512-dim / 2048-hidden / 8-head dynamics transformer.
+# Same shape as the prior post-spike recipe in configs/dynamics.yaml.
+embed_dim: 512
+num_heads: 8
+hidden_dim: 2048
+num_blocks: 18
+
+adam_beta1: 0.9
+adam_beta2: 0.95              # short exp_avg_sq memory — recovers in ~20 steps if a spike occurs
+adam_eps: 1e-8
+
+# Paths (Zelda frozen VT + large LAM).
+video_tokenizer_path: results/2026_06_08_12_51_05_zelda/video_tokenizer/checkpoints/video_tokenizer_step_37500
+latent_actions_path: results/large_action_model
+
+enable_eval_loss: true
+eval_loss_interval: 1000
+
+# Fresh run — do NOT resume from any prior dynamics checkpoint.
+checkpoint: null
