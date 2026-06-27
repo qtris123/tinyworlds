@@ -74,6 +74,7 @@ def rollout(
     num_steps: int = 10,
     temperature: float = 0.0,
     action_seed: Optional[int] = None,
+    teacher_forced: bool = False,
 ) -> torch.Tensor:
     """Autoregressively predict T_pred frames after the first context_window GT frames.
 
@@ -83,6 +84,11 @@ def rollout(
         actions Genie calls a-tilde_{1:t}). For action_mode='random', only the shape and
         n_actions matter for sampling; the GT pixels are not consulted for the action
         timeline.
+
+    When `teacher_forced=True`, the per-step context is taken from a sliding window
+    over the GT frames (the model only ever sees real frames as context, and errors
+    do not compound). When False (default, matching the Genie protocol), the context
+    is built from the model's own previously generated frames.
 
     Returns: [B, T_pred, C, H, W] predicted frames in [-1, 1].
     """
@@ -113,7 +119,10 @@ def rollout(
         return video_tokenizer.quantizer.get_latents_from_indices(idx, dim=-1)
 
     for i in range(T_pred):
-        ctx = generated[:, -context_window:]  # [B, context_window, C, H, W]
+        if teacher_forced:
+            ctx = ground_truth_frames[:, i : i + context_window]  # [B, context_window, C, H, W]
+        else:
+            ctx = generated[:, -context_window:]  # [B, context_window, C, H, W]
         ctx_indices = video_tokenizer.tokenize(ctx)  # [B, context_window, P]
         ctx_latents = video_tokenizer.quantizer.get_latents_from_indices(ctx_indices)  # [B, context_window, P, L]
 

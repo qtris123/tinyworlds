@@ -386,6 +386,10 @@ class EvaluationConfig:
 	# Number of clips per dataset for which to save a 3-row PNG visualization
 	# (GT vs gt-LAM rollout vs random-action rollout). 0 disables visualizations.
 	n_visualization_clips: int = 0
+	# When True, the rollout's per-step context is sliced from the GT frames
+	# instead of from previously-generated frames. Errors do not compound; useful
+	# as a single-step-error upper bound vs the standard free-running protocol.
+	teacher_forced: bool = False
 
 
 def load_config(config_cls, default_config_path: Optional[str] = None):

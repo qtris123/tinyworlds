@@ -104,9 +104,13 @@ def visualize_inference(predicted_frames, ground_truth_frames, inferred_actions,
 def save_frames_as_mp4(frames, output_path, fps=2):
     B, T, C, H, W = frames.shape
 
-    # OpenCV expects (W, H)
+    # OpenCV expects (W, H). Prefer 'avc1' (h264) when available, but fall back
+    # to 'mp4v' on systems without a usable h264 encoder (e.g. headless GPU
+    # hosts where v4l2m2m is missing) so the VideoWriter actually opens.
     fourcc = cv2.VideoWriter_fourcc(*'avc1')
     out = cv2.VideoWriter(output_path, fourcc, fps, (W, H))
+    if not out.isOpened():
+        out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (W, H))
 
     for i in range(T):
         frame = frames[0, i].detach().cpu().permute(1, 2, 0).numpy()  # [H, W, C]
