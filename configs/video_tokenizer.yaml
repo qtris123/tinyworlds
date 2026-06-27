@@ -1,5 +1,5 @@
 # Training
-batch_size_per_gpu: 350
+batch_size_per_gpu: 64    # was 350: (B*P)*H overflowed flash-attn grid limit (~65535); 64*64*8=32768 is safe
 gradient_accumulation_steps: 1
 n_updates: 40000
 learning_rate: 0.001

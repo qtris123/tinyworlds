@@ -156,6 +156,16 @@ def main():
 
     unwrap_model(model).train()
 
+    # env-gated perceptual loss (train-only frozen VGG16; ZERO inference params). 0 = off (original behavior).
+    # Pixel smooth_l1 alone over-smooths -> blurry recons; a perceptual term restores high-frequency detail.
+    perceptual_weight = float(os.environ.get('TOK_PERCEPTUAL_WEIGHT', 0.0))
+    perceptual_fn = None
+    if perceptual_weight > 0.0:
+        from utils.perceptual import VGGPerceptualLoss
+        perceptual_fn = VGGPerceptualLoss(args.device)
+        if is_main:
+            print(f"[perceptual] VGG16 LPIPS-style loss ON, weight={perceptual_weight}")
+
     train_iter = iter(training_loader)
     for i in tqdm(range(args.n_updates), disable=not is_main):
         for opt in optimizers:
@@ -175,6 +185,8 @@ def main():
 
             with train_ctx:
                 loss, x_hat = model(x)
+                if perceptual_fn is not None:
+                    loss = loss + perceptual_weight * perceptual_fn(x_hat, x)
                 loss /= args.gradient_accumulation_steps
                 if isinstance(model, FSDPModule):
                     if (micro_batch + 1) % args.gradient_accumulation_steps == 0:
