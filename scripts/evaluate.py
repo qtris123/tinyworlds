@@ -188,6 +188,7 @@ def _evaluate_dataset(
                 prediction_horizon=args.prediction_horizon,
                 num_steps=args.num_maskgit_steps,
                 temperature=args.temperature,
+                teacher_forced=args.teacher_forced,
             )
             psnr_gt_bt = frame_psnr(x_hat, target)  # [B, T_pred]
             sum_psnr_gt_per_t += psnr_gt_bt.sum(dim=0).double().cpu()
@@ -209,6 +210,7 @@ def _evaluate_dataset(
                     num_steps=args.num_maskgit_steps,
                     temperature=args.temperature,
                     action_seed=rnd_seed,
+                    teacher_forced=args.teacher_forced,
                 )
                 if s == 0:
                     x_hat_prime_first = x_hat_prime
@@ -253,6 +255,7 @@ def _evaluate_dataset(
         'n_actions': n_actions,
         'force_resize_to': list(args.force_resize_to),
         'used_zelda_holdout': dataset_name == 'ZELDA' and args.zelda_use_holdout,
+        'teacher_forced': args.teacher_forced,
         'tokenizer_recon_psnr_per_t': recon_per_t,
         'tokenizer_recon_psnr_mean': float(sum(recon_per_t) / max(len(recon_per_t), 1)),
         'psnr_gt_actions_per_t': psnr_gt_per_t,
